@@ -1,0 +1,93 @@
+service: notification-system
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+
+  environment:
+    STAGE: ${self:provider.stage}
+    QUEUE_URL:
+      Ref: NotificationQueue
+  
+plugins:
+  - serverless-esbuild
+  - serverless-offline
+  - serverless-iam-roles-per-function
+  
+
+custom:
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: true
+    exclude:
+      - aws-sdk
+
+package:
+  individually: true
+
+resources:
+  Resources:
+
+    NotificationDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: notification-dlq-${self:provider.stage}
+
+    NotificationQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: notification-queue-${self:provider.stage}
+        VisibilityTimeout: 60
+        RedrivePolicy:
+          deadLetterTargetArn:
+            Fn::GetAtt:
+              - NotificationDLQ
+              - Arn
+          maxReceiveCount: 3
+functions:
+
+  apiHandler:
+    handler: src/handlers/apiHandler.handler
+    timeout: 30
+
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - sqs:SendMessage
+        Resource:
+          Fn::GetAtt:
+            - NotificationQueue
+            - Arn
+
+    events:
+      - http:
+          path: notify
+          method: post
+
+  notificationProcessor:
+    handler: src/handlers/notificationProcessor.handler
+    timeout: 30
+
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - sqs:ReceiveMessage
+          - sqs:DeleteMessage
+          - sqs:GetQueueAttributes
+        Resource:
+          Fn::GetAtt:
+            - NotificationQueue
+            - Arn
+
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - NotificationQueue
+              - Arn
+          batchSize: 1
